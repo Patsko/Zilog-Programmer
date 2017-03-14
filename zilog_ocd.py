@@ -77,6 +77,12 @@ def ocd_read_flash(init_address = 0, size = 4096):
     
     return command    
     
+def ocd_read_crc():
+    # Read Program Memory CRC 0Eh 
+    command = binascii.unhexlify("800E") 
+    
+    return command
+    
 if __name__ == "__main__":
     print(" This is a library, not a standalone program.")
     

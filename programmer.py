@@ -3,12 +3,79 @@ import os, sys
 import time
 import binascii
 import serial
-from PyCRC.CRCCCITT import CRCCCITT
-import filecmp
 
 import intelhex2bin
 import zilog_ocd
 
+
+# Gets a 8-bit bytes object, reflects its bits and returns it 
+def reflect_byte(byte):
+    reflected_byte = 0
+    
+    aux = byte & 0x01
+    aux = aux << 7
+    reflected_byte += aux    
+    aux = byte & 0x02
+    aux = aux << 5
+    reflected_byte += aux     
+    aux = byte & 0x04
+    aux = aux << 3
+    reflected_byte += aux 
+    aux = byte & 0x08
+    aux = aux << 1
+    reflected_byte += aux
+    aux = byte & 0x10
+    aux = aux >> 1
+    reflected_byte += aux
+    aux = byte & 0x20
+    aux = aux >> 3
+    reflected_byte += aux    
+    aux = byte & 0x40
+    aux = aux >> 5
+    reflected_byte += aux
+    aux = byte & 0x80
+    aux = aux >> 7
+    reflected_byte += aux
+    
+    reflected_byte = reflected_byte.to_bytes(1, byteorder='little')
+    
+    return reflected_byte
+    
+# Gets an 16-bit bytes object, reflects its bits and returns it 
+def reflected_word(word):
+    
+    result = bytes(0)
+    word_pieces = list(word)    # Converts word to a list
+    result += reflect_byte(word_pieces[1])
+    result += reflect_byte(word_pieces[0])
+    
+    return result
+    
+# Gets a bytes object and inverts its bits  
+def invert_word(word):
+    word = int.from_bytes(word, byteorder='little')
+    word = ~word
+    word = word.to_bytes(2, byteorder='little', signed=True)
+    
+    return word
+    
+# Calculates CRC from a binary file and returns it as an int value
+def calculate_bin_crc(file):
+    file.seek(0)
+            
+    file_data = file.read()
+    file_data_reflected = bytes(0)
+    for byte in file_data:
+        reflected_byte = reflect_byte(byte)                            
+        file_data_reflected += reflected_byte                
+    crc_value = binascii.crc_hqx(file_data_reflected, 0xFFFF)
+    crc_value = crc_value.to_bytes(2, byteorder='little')
+    crc_value = reflected_word(crc_value)
+    crc_value = invert_word(crc_value)
+    crc_value = int.from_bytes(crc_value, byteorder='little')
+    
+    return (crc_value)
+    
 
 def main():
     print("|---------------------------------------------|")
@@ -29,8 +96,13 @@ def main():
         print (arg3)
         
     else:
-             
-        log_file = open("log.log","r+b")  # Creates the file in binary mode, with read and write permissions  
+        abs_path = os.getcwd()    # Gets 
+        abs_path = os.path.join(abs_path, "data")        
+        os.makedirs(abs_path, exist_ok=True)        # Creates an "data" subfolder, if it doesn't exists
+        abs_path_binary_file = os.path.join(abs_path, "fw_to_write.bin")    
+        abs_path_mcu_data_file = os.path.join(abs_path, "mcu_data.bin") 
+        
+        mcu_data_file = open(abs_path_mcu_data_file,"w+b")  # Creates the file in binary mode, with read and write permissions  
         
         # Checks MCU type and configures variables
         success = 1
@@ -49,7 +121,7 @@ def main():
              
         success = 0
         print ("Analysing file '"+ arg1 +"'")
-        output_file = intelhex2bin.convert_intelhex_to_bin(arg1, fw_size)       
+        output_file = intelhex2bin.convert_intelhex_to_bin(arg1, fw_size, abs_path_binary_file)       
         if output_file != '':
             print ("Conversion finished succesfully")
             success = 1
@@ -188,8 +260,25 @@ def main():
             print('Flash programming: OK')
             success = 1
      
+        # Checks CRC
+        if success == 1:
+            print('Checking CRC...')
+            command = zilog_ocd.ocd_read_crc()
+            ser.write(command)
+            serial_data = ser.read(2)
+            crc_read = ser.read(2)
+            crc_read = int.from_bytes(crc_read, byteorder='big')    # CRC is sent by the MCU as big endian  
+            crc_file = calculate_bin_crc(output_file)
+            print('CRC from MCU: ' + str(crc_read))          
+            print('CRC from file: ' + str(crc_file))
+            if (crc_read == crc_file):
+                print ('Flash successfully programmed!!')
+                success = 1
+            else:
+                print ('Operation unsuccessful...')
+     
         # Flash verify
-        if success == 1:            
+        if success == 0:   # Only reads Flash memory if CRC is invalid  
             addr = 0
             bytes_to_read = 2   # Data from program memory has to be read only 2 bytes at once. 
             print("Verifying Flash...")
@@ -198,15 +287,15 @@ def main():
                 ser.write(command)
                 ser.read(6)
                 serial_data = ser.read(bytes_to_read)
-                log_file.write(serial_data)
+                mcu_data_file.write(serial_data)
                 addr += bytes_to_read
                 
             # Checks if sent data is the same as read data
             output_file.seek(0)
             output_file_data = output_file.read()  
-            log_file.seek(0)
-            log_file_data = log_file.read()     
-            if output_file_data == log_file_data:     
+            mcu_data_file.seek(0)
+            mcu_data_file_data = mcu_data_file.read()     
+            if output_file_data == mcu_data_file_data:     
                 success = 1  
                 print('Success!')
             else:

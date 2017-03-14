@@ -2,9 +2,9 @@
 import os, sys
 import binascii
 
-def convert_intelhex_to_bin (filename, size):
+def convert_intelhex_to_bin (filename, size, filepath):
 
-    final_file = open("firmware_bin.bin","r+b")  # cria o arquivo, com permissão de leitura e escrita   
+    final_file = open(filepath,"w+b")  # cria o arquivo, com permissão de leitura e escrita   
     final_file.truncate(0)  
     final_file.write(bytes([0xFF] * size))     # Write 'size' bytes with 0xFF value
     final_file.seek(0)
