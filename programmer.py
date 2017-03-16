@@ -6,77 +6,37 @@ import serial
 
 import intelhex2bin
 import zilog_ocd
+import crc_calc
 
+   
+# Returns MCU clock - Warning: not all Zilog MCUs are mapped. Clock may be different if external oscillator is used.
+def get_mcu_clock(mcu):
+    if ('Z8F2480' in mcu):
+        return 11059200
+    elif ('Z8F1680' in mcu):
+        return 11059200
+    elif ('Z8F0880' in mcu):
+        return 11059200
+    elif ('Z8F08' in mcu):
+        return 5529600
+    elif ('Z8F04' in mcu):
+        return 5529600
+    else:
+        return 0
 
-# Gets a 8-bit bytes object, reflects its bits and returns it 
-def reflect_byte(byte):
-    reflected_byte = 0
-    
-    aux = byte & 0x01
-    aux = aux << 7
-    reflected_byte += aux    
-    aux = byte & 0x02
-    aux = aux << 5
-    reflected_byte += aux     
-    aux = byte & 0x04
-    aux = aux << 3
-    reflected_byte += aux 
-    aux = byte & 0x08
-    aux = aux << 1
-    reflected_byte += aux
-    aux = byte & 0x10
-    aux = aux >> 1
-    reflected_byte += aux
-    aux = byte & 0x20
-    aux = aux >> 3
-    reflected_byte += aux    
-    aux = byte & 0x40
-    aux = aux >> 5
-    reflected_byte += aux
-    aux = byte & 0x80
-    aux = aux >> 7
-    reflected_byte += aux
-    
-    reflected_byte = reflected_byte.to_bytes(1, byteorder='little')
-    
-    return reflected_byte
-    
-# Gets an 16-bit bytes object, reflects its bits and returns it 
-def reflected_word(word):
-    
-    result = bytes(0)
-    word_pieces = list(word)    # Converts word to a list
-    result += reflect_byte(word_pieces[1])
-    result += reflect_byte(word_pieces[0])
-    
-    return result
-    
-# Gets a bytes object and inverts its bits  
-def invert_word(word):
-    word = int.from_bytes(word, byteorder='little')
-    word = ~word
-    word = word.to_bytes(2, byteorder='little', signed=True)
-    
-    return word
-    
-# Calculates CRC from a binary file and returns it as an int value
-def calculate_bin_crc(file):
-    file.seek(0)
-            
-    file_data = file.read()
-    file_data_reflected = bytes(0)
-    for byte in file_data:
-        reflected_byte = reflect_byte(byte)                            
-        file_data_reflected += reflected_byte                
-    crc_value = binascii.crc_hqx(file_data_reflected, 0xFFFF)
-    crc_value = crc_value.to_bytes(2, byteorder='little')
-    crc_value = reflected_word(crc_value)
-    crc_value = invert_word(crc_value)
-    crc_value = int.from_bytes(crc_value, byteorder='little')
-    
-    return (crc_value)
-    
-
+# Returns MCU Flash size - Warning: not all Zilog MCUs are mapped
+def get_mcu_flash_size(mcu):
+    if ('Z8F24' in mcu):
+        return 24576
+    elif ('Z8F16' in mcu):
+        return 16384
+    elif ('Z8F08' in mcu):
+        return 8192
+    elif ('Z8F04' in mcu):
+        return 4096
+    else:
+        return 0
+        
 def main():
     print("|---------------------------------------------|")
     print("|             ZILOG programmer                |")
@@ -96,26 +56,18 @@ def main():
         print (arg3)
         
     else:
-        abs_path = os.getcwd()    # Gets 
+        abs_path = os.getcwd()    # Gets current working directory
         abs_path = os.path.join(abs_path, "data")        
-        os.makedirs(abs_path, exist_ok=True)        # Creates an "data" subfolder, if it doesn't exists
+        os.makedirs(abs_path, exist_ok=True)        # Creates a "data" subfolder, if it doesn't exists
         abs_path_binary_file = os.path.join(abs_path, "fw_to_write.bin")    
         abs_path_mcu_data_file = os.path.join(abs_path, "mcu_data.bin") 
         
         mcu_data_file = open(abs_path_mcu_data_file,"w+b")  # Creates the file in binary mode, with read and write permissions  
         
         # Checks MCU type and configures variables
-        success = 1
-        if ('Z8F24' in arg3):
-            fw_size = 24576
-            clock = 11059200
-        elif ('Z8F08' in arg3):
-            fw_size = 8192
-            clock = 5529600
-        elif ('Z8F04' in arg3):
-            fw_size = 4096
-            clock = 5529600
-        else:
+        clock = get_mcu_clock(arg3)
+        fw_size = get_mcu_flash_size(arg3)
+        if (clock == 0) or (fw_size == 0):
             success = 0
             print("MCU was not defined! ")                          
              
@@ -150,7 +102,7 @@ def main():
             ser.reset_input_buffer()
             success = 1
             '''
-            # Enter debug by setting register
+            # Enter debug by setting register - doesn't work with Z8F2480
             command = zilog_ocd.ocd_enter_debug()
             ser.write(command)
             serial_data = ser.read(3)     # Dummy read
@@ -268,7 +220,7 @@ def main():
             serial_data = ser.read(2)
             crc_read = ser.read(2)
             crc_read = int.from_bytes(crc_read, byteorder='big')    # CRC is sent by the MCU as big endian  
-            crc_file = calculate_bin_crc(output_file)
+            crc_file = crc_calc.calculate_bin_crc(output_file)
             print('CRC from MCU: ' + str(crc_read))          
             print('CRC from file: ' + str(crc_file))
             if (crc_read == crc_file):
@@ -276,9 +228,10 @@ def main():
                 success = 1
             else:
                 print ('Operation unsuccessful...')
+                success = -1
      
         # Flash verify
-        if success == 0:   # Only reads Flash memory if CRC is invalid  
+        if success == -1:   # Only reads Flash memory if CRC is invalid  
             addr = 0
             bytes_to_read = 2   # Data from program memory has to be read only 2 bytes at once. 
             print("Verifying Flash...")
@@ -296,7 +249,6 @@ def main():
             mcu_data_file.seek(0)
             mcu_data_file_data = mcu_data_file.read()     
             if output_file_data == mcu_data_file_data:     
-                success = 1  
                 print('Success!')
             else:
                 print('Error')
