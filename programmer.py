@@ -7,7 +7,6 @@ import serial
 import intelhex2bin
 import zilog_ocd
 import crc_calc
-
    
 # Returns MCU clock - Warning: not all Zilog MCUs are mapped. Clock may be different if external oscillator is used.
 def get_mcu_clock(mcu):
@@ -64,43 +63,49 @@ def main():
         
         mcu_data_file = open(abs_path_mcu_data_file,"w+b")  # Creates the file in binary mode, with read and write permissions  
         
-        # Checks MCU type and configures variables
-        clock = get_mcu_clock(arg3)
-        fw_size = get_mcu_flash_size(arg3)
-        if (clock == 0) or (fw_size == 0):
-            success = 0
-            print("MCU was not defined! ")                          
+        state = 'CHECK MCU';  
+        
+        # Checks MCU type and configures variables      
+        if state == 'CHECK MCU':      
+            clock = get_mcu_clock(arg3)
+            fw_size = get_mcu_flash_size(arg3)
+            if (clock == 0) or (fw_size == 0):
+                state = 'ERROR'
+                print("MCU was not defined! ")
+            else:
+                state = 'CONVERT HEX FILE';
              
-        success = 0
-        print ("Analysing file '"+ arg1 +"'")
-        output_file = intelhex2bin.convert_intelhex_to_bin(arg1, fw_size, abs_path_binary_file)       
-        if output_file != '':
-            print ("Conversion finished succesfully")
-            success = 1
-        else:
-            print ("Conversion unsuccesful")
+        if state == 'CONVERT HEX FILE':
+            print ("Analysing file '"+ arg1 +"'")
+            output_file = intelhex2bin.convert_intelhex_to_bin(arg1, fw_size, abs_path_binary_file)       
+            if output_file != '':
+                print ("Conversion finished succesfully")
+                state = 'OPEN COM PORT'
+            else:
+                print ("Conversion unsuccesful")                
+                state = 'ERROR';
              
-        try:
-            ser = serial.Serial(arg2, 28800)            
-            ser.timeout = 3
-            ser.reset_input_buffer()
-            success = 1;
-            print("Sucesso")
-            print("Porta:    " + ser.port)
-            print("Baudrate: " + str(ser.baudrate))
-        except:
-            success = 0;
-            print("Falha na Abertura de " + ser.port)
-
+        if state == 'OPEN COM PORT':
+            try:
+                ser = serial.Serial(arg2, 28800)            
+                ser.timeout = 3
+                ser.reset_input_buffer()
+                state = 'ENTER DEBUG'
+                print("Sucess")
+                print("Port:     " + ser.port)
+                print("Baudrate: " + str(ser.baudrate))                
+            except:
+                state = 'ERROR'
+                print("Failure while trying to open " + ser.port)
 
         # Enter debug
-        if success == 1:
+        if state == 'ENTER DEBUG':
             # Enter debug by sending break and resetting MCU
             ser.break_condition = True;
             user = input('Please reset MCU and press any key')
             ser.break_condition = False;
             ser.reset_input_buffer()
-            success = 1
+            state = 'READ OCD'
             '''
             # Enter debug by setting register - doesn't work with Z8F2480
             command = zilog_ocd.ocd_enter_debug()
@@ -109,43 +114,43 @@ def main():
             '''
             
         # Read OCD Revision
-        if success == 1:        
+        if state == 'READ OCD':       
             command = zilog_ocd.ocd_read_revision()
             ser.write(command)
             serial_data = ser.read(4)
             serial_data = binascii.hexlify(serial_data)
             if b'800001' in serial_data:
                 print('OCD revision: OK')
-                success = 1
+                state = 'CHECK DEBUG'
             else:
                 print('OCD revision: Error')
                 print(serial_data)
-                success = 0
+                state = 'ERROR'
         
         # Checks if is in Debug mode
-        if success == 1:
+        if state == 'CHECK DEBUG':       
             command = zilog_ocd.ocd_read_debug()
             ser.write(command)
             serial_data = ser.read(3)
             value = serial_data[2]        # Pega o terceiro byte da sequência, que contém o valor do registrador           
             if value & 0x80 == 0x80:  # Verifica se bit correspondente ao modo debug está setado
                 print('Debug mode: OK')
-                success = 1
+                state = 'WRITE FREQ REG'
             else:
                 print('Debug mode: Error')
                 print(binascii.hexlify(serial_data))
-                success = 0      
+                state = 'ERROR'     
 
         # Write Flash Programming Frequency register
-        if success == 1:
+        if state == 'WRITE FREQ REG':       
             command = zilog_ocd.ocd_write_flash_freq_reg(clock)
             ser.write(command)
             serial_data = ser.read(7)     # Dummy read
             print('Flash Programming Frequency: OK')
-            success = 1
+            state = 'FLASH UNLOCK'
                               
         # Flash unlock
-        if success == 1:
+        if state == 'FLASH UNLOCK':       
             command = zilog_ocd.ocd_unlock_flash_1()
             ser.write(command)
             serial_data = ser.read(6)     # Dummy read
@@ -158,32 +163,37 @@ def main():
             value = serial_data[5]        # The sixth byte contains the value of the register         
             if value & 0x3F == 0x03:    # Check if flash is unlocked
                 print('Flash unlock: OK')
-                success = 1
+                state = 'FLASH ERASE'
             else:
                 print('Flash unlock Error')
                 print(binascii.hexlify(serial_data))
-                success = 0
+                state = 'ERROR'
         
         # Flash mass erase
-        if success == 1:
+        if state == 'FLASH ERASE':
             command = zilog_ocd.ocd_mass_erase_flash()
             ser.write(command)
             serial_data = ser.read(6)     # Dummy read
-            success = 0
-            while (success == 0):
+            
+            count = 0
+            while (count < 10):
+                count += 1
                 command = zilog_ocd.ocd_read_flash_stat()
                 ser.write(command)
                 serial_data = ser.read(6)
                 value = serial_data[5]        # The sixth byte contains the value of the register         
                 if value & 0x38 == 0x00:    # Check if mass erase operation has finished
                     print('Flash mass erase: OK')
-                    success = 1
+                    state = 'FLASH UNLOCK'
+                    break
                 else:
                     print('Verifying Flash status...')
-                    time.sleep(0.5)
+                    time.sleep(0.5)                
+            if count >= 10:
+                state = 'ERROR'                    
              
         # Flash unlock
-        if success == 1:
+        if state == 'FLASH UNLOCK':       
             command = zilog_ocd.ocd_unlock_flash_1()
             ser.write(command)
             serial_data = ser.read(6)     # Dummy read
@@ -196,24 +206,24 @@ def main():
             value = serial_data[5]        # The sixth byte contains the value of the register         
             if value & 0x3F == 0x03:    # Check if flash is unlocked
                 print('Flash unlock: OK')
-                success = 1
+                state = 'FLASH PROGRAM'
             else:
                 print('Flash unlock Error')
                 print(binascii.hexlify(serial_data))
-                success = 0
+                state = 'ERROR'
 
         # Flash programming
-        if success == 1:
+        if state == 'FLASH PROGRAM':       
             print("Programming Flash...")
             command = zilog_ocd.ocd_write_flash(output_file, 0, fw_size)
             ser.write(command)  
             time.sleep(2)         
             ser.reset_input_buffer()
             print('Flash programming: OK')
-            success = 1
+            state = 'CHECK CRC'
      
         # Checks CRC
-        if success == 1:
+        if state == 'CHECK CRC':
             print('Checking CRC...')
             command = zilog_ocd.ocd_read_crc()
             ser.write(command)
@@ -224,14 +234,14 @@ def main():
             print('CRC from MCU: ' + str(crc_read))          
             print('CRC from file: ' + str(crc_file))
             if (crc_read == crc_file):
-                print ('Flash successfully programmed!!')
-                success = 1
+                print ('CRC matches!')
+                state = 'FINISHED'
             else:
-                print ('Operation unsuccessful...')
-                success = -1
+                print ('CRC doesn\'t match')
+                state = 'FLASH VERIFY'
      
         # Flash verify
-        if success == -1:   # Only reads Flash memory if CRC is invalid  
+        if state == 'FLASH VERIFY':   # Only reads Flash memory if CRC is invalid  
             addr = 0
             bytes_to_read = 2   # Data from program memory has to be read only 2 bytes at once. 
             print("Verifying Flash...")
@@ -249,9 +259,15 @@ def main():
             mcu_data_file.seek(0)
             mcu_data_file_data = mcu_data_file.read()     
             if output_file_data == mcu_data_file_data:     
-                print('Success!')
+                print('Flash verify success!')
             else:
-                print('Error')
+                print('Flash verify error')
+        
+        if state == 'ERROR':
+            print ('Flash programming was not successful')
+            
+        if state == 'FINISHED':
+            print ('Flash programming successfully completed!')
         
                     
 if __name__ == "__main__":
