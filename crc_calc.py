@@ -50,7 +50,8 @@ def reflected_word(word):
 def invert_word(word):
     word = int.from_bytes(word, byteorder='little')
     word = ~word
-    word = word.to_bytes(2, byteorder='little', signed=True)
+    word &= 0xFFFF
+    word = word.to_bytes(2, byteorder='little')
     
     return word
     
